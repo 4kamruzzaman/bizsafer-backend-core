@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # React Frontend (Path: /var/www/bizsafer)
+  frontend:
+    build: ./frontend
+    container_name: bizsafer_frontend
+    restart: always
+    networks:
+      - bizsafer_prod
+
+  # Laravel Backend (Path: /var/www/bizsafer-panel)
+  backend:
+    build: ./backend
+    container_name: bizsafer_backend
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "https://panel.bizsafer.com/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - bizsafer_prod
+
+  # Nginx Gateway
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - bizsafer_prod
+
+networks:
+  bizsafer_prod:
+    driver: bridge
