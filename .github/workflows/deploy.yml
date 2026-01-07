@@ -1,45 +1,58 @@
-name: Production Multi-Stack Deployment
+name: Backend Production Deployment
 
 on:
   push:
     branches: [ main ]
 
 jobs:
-  deploy:
+  # Stage 1: Test
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - uses: actions/checkout@v4
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, intl, pdo_mysql
+      - name: Install Dependencies
+        run: composer install --prefer-dist --no-progress
+      - name: Run Unit Tests
+        run: php artisan test
+
+  # Stage 2: Deploy
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Private Repo
         uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Build & Push Images
-        # Note: You would typically push to a registry like Docker Hub
-        run: |
-          docker build -t bizsafer-frontend:${{ github.sha }} ./frontend
-          docker build -t bizsafer-backend:${{ github.sha }} ./backend
-
-      - name: Deploy to VPS via SSH
+      - name: Deploy to VPS
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.PROD_HOST }}
           username: ${{ secrets.PROD_USER }}
-          key: ${{ secrets.PROD_SSH_KEY }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          ssh_options: -A
           script: |
-            cd /home/deploy/bizsafer-infra
-            # Update Version Tags
-            sed -i "s/VERSION=.*/VERSION=${{ github.sha }}/" .env
+            cd /var/www/bizsafer-panel
             
-            docker-compose pull
-            docker-compose up -d
+            # Pull private code
+            git pull git@github.com:bizsafer/bizsafer-panel.git main
             
-            # --- STAGE 5: AUTOMATED HEALTH GATE ---
-            echo "Verifying deployment health..."
-            sleep 40
-            HEALTH_STATUS=$(docker inspect -f '{{.State.Health.Status}}' bizsafer_backend)
+            # Rebuild Containers
+            docker-compose up -d --build
             
-            if [ "$HEALTH_STATUS" != "healthy" ]; then
-              echo "Health check FAILED. Reverting to stable version..."
-              sed -i "s/VERSION=.*/VERSION=stable/" .env
-              docker-compose up -d
-              exit 1
+            # Run Database Migrations
+            docker-compose exec -T backend php artisan migrate --force
+            
+            # Verify Health (Stage 3)
+            echo "Checking API Health..."
+            sleep 30
+            if [ "$(docker inspect -f '{{.State.Status}}' bizsafer_backend)" != "running" ]; then
+               echo "Backend crashed!"
+               exit 1
             fi
-            echo "Deployment SUCCESSFUL."
